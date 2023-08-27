@@ -22,9 +22,7 @@ REASONABLE_DEFAULTS = {
         }
 
 def color_text(color, text):
-    if os.name == 'nt':
-        return text
-    return "\033[9%sm%s\033[0m" % (color,text)
+    return text if os.name == 'nt' else "\033[9%sm%s\033[0m" % (color,text)
 
 class Params:
     def __init__(self,params,accept_none):
@@ -34,24 +32,19 @@ class Params:
     
     def blend_with_env(self,opts):
         d = {}
-        
+
         for p in self.params:
-            env_var_name = 'MAPNIK_%s' % p.upper()
+            env_var_name = f'MAPNIK_{p.upper()}'
 
             # first pull from passed options...
-            if not opts.get(p) is None:
+            if opts.get(p) is not None:
                 d[p] = opts[p]
 
-            # then try to pull from environment settings
-            elif not os.environ.get(env_var_name) is None:
+            elif os.environ.get(env_var_name) is not None:
                 d[p] = os.environ[env_var_name]
 
-            # then assign any reasonable default values...
             elif p in REASONABLE_DEFAULTS.keys():
                 d[p] = REASONABLE_DEFAULTS[p]
-            # if --accept-none is passed then we assume
-            # its a paramater that mapnik likely does not need
-            # and will ignore if it is an empty string (e.g. db values)
             elif self.accept_none:
                 d[p] = ''
             else:
@@ -59,11 +52,9 @@ class Params:
         return d
 
 def generate_help_text(var,default):
-    if var == 'host':
-        return 'Set postgres database host %s' % default
-    elif var == 'port':
-        return 'Set postgres database host %s' % default
-    return "Set value of '%s' %s" % (var,default)
+    if var in ['host', 'port']:
+        return f'Set postgres database host {default}'
+    return f"Set value of '{var}' {default}"
     
 def serialize(xml,options):
     try:
@@ -80,23 +71,25 @@ def serialize(xml,options):
         mapnik.load_map(m,xml,True)
     if options.output:
         mapnik.save_map(m,options.output)
+    elif hasattr(mapnik,'mapnik_version') and mapnik.mapnik_version() >= 700:
+        print(mapnik.save_map_to_string(m))
     else:
-        if hasattr(mapnik,'mapnik_version') and mapnik.mapnik_version() >= 700:
-            print(mapnik.save_map_to_string(m))
-        else:
-            sys.exit(color_text(1,'Minor error: printing XML to stdout requires Mapnik >=0.7.0, please provide a second argument to save the output to a file'))
+        sys.exit(color_text(1,'Minor error: printing XML to stdout requires Mapnik >=0.7.0, please provide a second argument to save the output to a file'))
 
 def validate(params,parser):
     if not os.path.exists(params['world_boundaries']):
-        parser.error("Directory '%s' used for param '%s' not found" % (params['world_boundaries'],'world_boundaries'))
+        parser.error(
+            f"Directory '{params['world_boundaries']}' used for param 'world_boundaries' not found"
+        )
     supported_srs = [900913,4326]
-    if not int(params['epsg']) in supported_srs:
-        parser.error('Sorry only supported projections are: %s' % supported_srs)
-    if not params['estimate_extent'] == 'false':
+    if int(params['epsg']) not in supported_srs:
+        parser.error(f'Sorry only supported projections are: {supported_srs}')
+    if params['estimate_extent'] != 'false':
         params['extent'] = ''
 
 # set up parser...
-parser = optparse.OptionParser(usage="""%prog [template xml] <output xml> <parameters>
+parser = optparse.OptionParser(
+    usage="""%prog [template xml] <output xml> <parameters>
 
 Full help:
  $ %prog -h (or --help for possible options)
@@ -105,7 +98,9 @@ Read 'osm.xml' and modify '/inc' files in place, pass dbname and user, accept em
  $ %prog --dbname osm --user postgres --accept-none
 
 Read template, save output xml, and pass variables as options
- $ %prog osm.xml my_osm.xml --dbname spain --user postgres --host ''""", version='%prog ' + __version__)
+ $ %prog osm.xml my_osm.xml --dbname spain --user postgres --host ''""",
+    version=f'%prog {__version__}',
+)
 
 
 if __name__ == '__main__':
@@ -113,76 +108,80 @@ if __name__ == '__main__':
     # custom parse of includes directory if supplied...
     if '--inc' in sys.argv:
         idx = sys.argv.index('--inc')
-        if not len(sys.argv) > (idx+1) or '--' in sys.argv[idx+1]:
+        if len(sys.argv) <= idx + 1 or '--' in sys.argv[idx + 1]:
             parser.error("--inc argument requires a path to a directory as an argument")
         else:
             search_path = os.path.join(sys.argv[idx+1],'*.template')
     else:
         search_path = REASONABLE_DEFAULTS['inc']
-    
+
     inc_dir = os.path.dirname(search_path)
-    parser.add_option('--inc', dest='inc', help="Includes dir (default: '%s')" % inc_dir )
-    
+    parser.add_option(
+        '--inc', dest='inc', help=f"Includes dir (default: '{inc_dir}')"
+    )
+
     parser.add_option('--accept-none', dest='accept_none', action='store_true', help="Interpret lacking value as unneeded")
-    
+
     if not os.path.exists(inc_dir):
         parser.error("The 'inc' path you gave is bogus!")
-        
+
     # get all the includes
     includes = glob.glob(search_path)
-    
+
     if not includes:
-        parser.error("Can't find include templates, please provide search path using '--inc' , currently using '%s'" % search_path)
+        parser.error(
+            f"Can't find include templates, please provide search path using '--inc' , currently using '{search_path}'"
+        )
 
     p = re.compile('.*%\((\w+)\)s.*')
-    
-    text = ''
-    for xml in includes:
-        text += open(xml,'r').read()
-    
+
+    text = ''.join(open(xml,'r').read() for xml in includes)
     # find all variables in template includes
     matches = p.findall(text)
-    
+
     if not matches:
         parser.error(color_text(1,"Can't properly parse out variables in include templates.\nMake sure they are all wrapped like '%(variable)s'"))
-    
+
     # look ahead and build up --help text...
     p = Params(matches,accept_none=False)
     blended = p.blend_with_env({})
     c_opts = []
     for var in matches:
-        if not var in c_opts:
-            msg = "(default: '%(" + var + ")s')"
-            if var in blended:
-                default = msg % blended
-            else:
-                default = ''#msg % {var:'None'}
+        if var not in c_opts:
+            msg = f"(default: '%({var})s')"
+            default = msg % blended if var in blended else ''
             help = generate_help_text(var,default)
-            parser.add_option('--%s' % var, dest=var,help=generate_help_text(var,default))
+            parser.add_option(f'--{var}', dest=var, help=generate_help_text(var,default))
             c_opts.append(var)
 
     # now, actually run the tool...
     (options, args) = parser.parse_args()
     p = Params(matches,options.accept_none)
     blended = p.blend_with_env(options.__dict__)
-    
+
     help_text = "\n\nNote: use --accept-none to pass blank values for other parameters "
     if p.missing:
-        parser.error(color_text(1,"\nPlease provide the following parameters values (or set as env variables):\n%s" % ''.join([" --%s 'value' " % v for v in p.missing]) + help_text))
-    
+        parser.error(
+            color_text(
+                1,
+                "\nPlease provide the following parameters values (or set as env variables):\n%s"
+                % ''.join([f" --{v} 'value' " for v in p.missing])
+                + help_text,
+            )
+        )
+
     validate(blended,parser)
-    
+
     for xml in includes:
-        template = open(xml,'r')
-        new_name = xml.replace('.template','')
-        new_file = open(new_name,'w')
-        try:
-            new_file.write(template.read() % blended)
-        except ValueError as e:
-            parser.error(color_text(1,"\n%s (found in %s)" % (e,xml)))
-        template.close()
+        with open(xml,'r') as template:
+            new_name = xml.replace('.template','')
+            new_file = open(new_name,'w')
+            try:
+                new_file.write(template.read() % blended)
+            except ValueError as e:
+                parser.error(color_text(1,"\n%s (found in %s)" % (e,xml)))
         new_file.close()
-        
+
     options.output = None
     options.from_string = False
     template_xml = None
