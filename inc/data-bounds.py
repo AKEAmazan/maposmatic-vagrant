@@ -53,8 +53,8 @@ js = { '_northEast': { 'lon': float(bbox[2]), 'lat': float(bbox[3]) },
 with open("bbox.json", 'w') as f:
     json.dump(js, f, indent=2)
 
-bbox_str = "%s, %s, %s, %s" % (bbox[0], bbox[1], bbox[2], bbox[3])
-    
+bbox_str = f"{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}"
+
 query = """
 SELECT st_xmin(poly)
      , st_ymin(poly)
